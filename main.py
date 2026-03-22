@@ -2,8 +2,16 @@ import telebot
 import requests
 import json
 import os
+from flask import Flask # রেন্ডারের জন্য এটি দরকার
 
-# সার্ভার থেকে তথ্য পড়ার জন্য Environment Variables ব্যবহার
+# Flask সেটআপ যেন রেন্ডার খুশি থাকে
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "MovieSatBD Bot is Running!"
+
+# সিক্রেট ভেরিয়েবল
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 FIREBASE_URL = os.getenv("FIREBASE_URL")
@@ -13,7 +21,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "SkyNet Digital AI সক্রিয়! মুভি আইডি পাঠান।")
+    bot.reply_to(message, "আকাশ, SkyNet Digital AI সচল আছে! মুভি আইডি পাঠান।")
 
 @bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID)
 def save_movie(message):
@@ -28,14 +36,20 @@ def save_movie(message):
                 "poster": f"https://image.tmdb.org/t/p/w500{data.get('poster_path', '')}",
                 "overview": data.get('overview', 'বিবরণ নেই')
             }
-            # Firebase URL-এর শেষে স্লাশ থাকলে সেটি ঠিক করে মুভিজ ডেটাবেজে পাঠানো
             clean_url = FIREBASE_URL.rstrip('/')
             requests.post(f"{clean_url}/movies.json", data=json.dumps(movie_info))
-            bot.reply_to(message, f"✅ {data['title']} সেভ হয়েছে!")
+            bot.reply_to(message, f"✅ {data['title']} সফলভাবে Firebase-এ সেভ হয়েছে!")
         else:
-            bot.reply_to(message, "❌ মুভি আইডিটি সঠিক নয়।")
+            bot.reply_to(message, "❌ মুভি পাওয়া যায়নি।")
     except Exception as e:
-        bot.reply_to(message, f"❌ সমস্যা হয়েছে: {str(e)}")
+        bot.reply_to(message, f"❌ এরর: {str(e)}")
 
-bot.polling()
-
+# বট এবং ফ্ল্যাক্স একসাথে চালানো
+if __name__ == "__main__":
+    from threading import Thread
+    def run_bot():
+        bot.polling(none_stop=True)
+    
+    Thread(target=run_bot).start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    
