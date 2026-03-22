@@ -18,7 +18,7 @@ def home():
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 FIREBASE_URL = os.getenv("FIREBASE_URL").rstrip('/')
-FIREBASE_SECRET = os.getenv("FIREBASE_SECRET") # Koyeb-এ এটি সেট করেছেন তো?
+FIREBASE_SECRET = os.getenv("FIREBASE_SECRET")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -26,9 +26,21 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # সাময়িকভাবে মুভি ডাটা রাখার জন্য ডিকশনারি
 user_data = {}
 
+# TMDB থেকে ট্রেইলার লিঙ্ক খোঁজার ফাংশন
+def get_trailer(movie_id):
+    video_url = f"https://api.themoviedb.org/3/movie/{movie_id}/videos?api_key={TMDB_API_KEY}"
+    try:
+        res = requests.get(video_url).json()
+        for video in res.get('results', []):
+            if video['site'] == 'YouTube' and video['type'] == 'Trailer':
+                return f"https://www.youtube.com/embed/{video['key']}"
+    except:
+        pass
+    return ""
+
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "আকাশ, SkyNet Digital AI মুভি বট এখন হাই-সিকিউর! মুভি আইডি (TMDB ID) পাঠান।")
+    bot.reply_to(message, "আকাশ, SkyNet Digital AI মুভি বট এখন অটো-ট্রেইলার সাপোর্টেড! মুভি আইডি পাঠান।")
 
 @bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID)
 def handle_movie_id(message):
@@ -37,7 +49,7 @@ def handle_movie_id(message):
         bot.reply_to(message, "❌ দয়া করে শুধু মুভির ID সংখ্যাটি পাঠান।")
         return
 
-    # ১. হাই-সিকিউরিটি চাবি ব্যবহার করে ডুপ্লিকেট চেক
+    # ১. ডুপ্লিকেট চেক (সিকিউরিটি কি সহ)
     check_url = f"{FIREBASE_URL}/movies.json?auth={FIREBASE_SECRET}"
     
     try:
@@ -52,7 +64,6 @@ def handle_movie_id(message):
     except Exception as e:
         print(f"Duplicate Check Error: {e}")
 
-    # মুভি আইডি ঠিক থাকলে ভাষা সিলেক্ট করতে বলা
     user_data[message.chat.id] = {'movie_id': movie_id}
     
     markup = types.InlineKeyboardMarkup()
@@ -73,6 +84,7 @@ def save_movie_callback(call):
     selected_lang = call.data.split('_')[1].capitalize()
     movie_id = user_data[chat_id]['movie_id']
 
+    # মুভি ডিটেইলস সংগ্রহ
     tmdb_url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_API_KEY}&language=bn-BD"
     
     try:
@@ -80,8 +92,8 @@ def save_movie_callback(call):
         data = response.json()
         
         if 'title' in data:
-            # ট্রেইলার না থাকলে খালি থাকবে, যা ওয়েবসাইটকে 'Premium/Coming Soon' দেখাতে সাহায্য করবে
-            trailer_url = "" 
+            # অটোমেটিক ট্রেইলার লিঙ্ক সংগ্রহ
+            trailer_link = get_trailer(movie_id)
             
             movie_info = {
                 "id": movie_id,
@@ -89,12 +101,12 @@ def save_movie_callback(call):
                 "poster": f"https://image.tmdb.org/t/p/w500{data.get('poster_path', '')}",
                 "overview": data.get('overview', 'বিবরণ নেই'),
                 "language": selected_lang,
-                "video_url": trailer_url, 
-                "download_url": "", # এটি খালি থাকলে ওয়েবসাইট বুঝবে মুভিটি এখনও আসেনি
-                "status": "Coming Soon"
+                "video_url": trailer_link, # ট্রেইলার থাকলে লিঙ্ক যাবে, না থাকলে খালি
+                "download_url": "", 
+                "status": "Premium Coming Soon" # সবসময় প্রিমিয়াম লেখা থাকবে
             }
             
-            # ২. হাই-সিকিউরিটি চাবি ব্যবহার করে ডাটা সেভ করা
+            # ২. ফায়ারবেসে ডাটা সেভ (সিকিউরিটি কি সহ)
             firebase_post_url = f"{FIREBASE_URL}/movies.json?auth={FIREBASE_SECRET}"
             
             res = requests.post(firebase_post_url, json=movie_info)
@@ -102,7 +114,7 @@ def save_movie_callback(call):
                 bot.edit_message_text(f"✅ *{data['title']}* ({selected_lang})\nসফলভাবে সেভ হয়েছে এবং নিরাপদ!", 
                                      chat_id, call.message.message_id, parse_mode="Markdown")
             else:
-                bot.send_message(chat_id, "❌ ফায়ারবেসে সেভ করতে সমস্যা হয়েছে। সিক্রেট কি চেক করুন।")
+                bot.send_message(chat_id, "❌ ফায়ারবেসে সেভ করতে সমস্যা হয়েছে।")
         else:
             bot.send_message(chat_id, "❌ মুভি পাওয়া যায়নি।")
     except Exception as e:
@@ -121,9 +133,6 @@ if __name__ == "__main__":
     t.start()
     
     print("Bot is starting...")
-    while True:
-        try:
-            bot.infinity_polling(timeout=20, long_polling_timeout=10)
-        except Exception as e:
-            time.sleep(5)
-        
+    # skip_pending=True দেওয়া হয়েছে যাতে 409 Conflict এরর না আসে
+    bot.infinity_polling(skip_pending=True, timeout=20)
+    
