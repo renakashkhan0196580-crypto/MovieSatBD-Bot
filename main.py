@@ -1,20 +1,17 @@
 import telebot
 import requests
-import json
 import os
-import time
 from flask import Flask
 from threading import Thread
 from telebot import types
 
-# Flask সেটআপ
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "SkyNet Digital AI: MovieSatBD Bot is Online & Secure!"
+    return "SkyNet Digital AI: MovieSatBD Manager is Live!"
 
-# এনভায়রনমেন্ট ভেরিয়েবল
+# Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 FIREBASE_URL = os.getenv("FIREBASE_URL", "").rstrip('/')
@@ -22,122 +19,127 @@ FIREBASE_SECRET = os.getenv("FIREBASE_SECRET")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 bot = telebot.TeleBot(BOT_TOKEN)
-
-# সাময়িকভাবে মুভি/সিরিজ ডাটা রাখার জন্য ডিকশনারি
 user_data = {}
 
-# TMDB থেকে ট্রেইলার লিঙ্ক খোঁজার ফাংশন (মুভি ও টিভি উভয়ের জন্য)
-def get_trailer(content_id, is_tv=False):
-    type_path = "tv" if is_tv else "movie"
-    video_url = f"https://api.themoviedb.org/3/{type_path}/{content_id}/videos?api_key={TMDB_API_KEY}"
-    try:
-        res = requests.get(video_url).json()
-        for video in res.get('results', []):
-            if video['site'] == 'YouTube' and video['type'] in ['Trailer', 'Teaser']:
-                return f"https://www.youtube.com/embed/{video['key']}"
-    except:
-        pass
-    return ""
+# --- Utility: Firebase থেকে আইডি দিয়ে কি (Key) খোঁজা ---
+def find_firebase_key(movie_id):
+    res = requests.get(f"{FIREBASE_URL}/movies.json?auth={FIREBASE_SECRET}").json()
+    if res:
+        for key, value in res.items():
+            if str(value.get('id')) == str(movie_id):
+                return key, value
+    return None, None
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "আকাশ, SkyNet Digital AI মুভি বট এখন মুভি ও সিরিজ উভয়ই সাপোর্ট করে! আইডি পাঠান।")
+    bot.reply_to(message, "আকাশ, মুভি ম্যানেজ করতে আইডি পাঠান।\nডিলিট করতে 'delete' লিখুন।\nএডিট শুরু করতে 'video' লিখুন।")
 
+# --- প্রধান মেসেজ হ্যান্ডলার ---
 @bot.message_handler(func=lambda message: message.chat.id == ADMIN_ID)
-def handle_content_id(message):
-    content_id = message.text.strip()
-    if not content_id.isdigit():
-        bot.reply_to(message, "❌ দয়া করে শুধু আইডি সংখ্যাটি পাঠান।")
+def handle_commands(message):
+    text = message.text.strip().lower()
+
+    # ১. ডিলিট মোড চালু
+    if text == "delete":
+        user_data[message.chat.id] = {'action': 'delete_mode'}
+        bot.reply_to(message, "🗑️ আপনি ডিলিট মোডে আছেন। যে মুভিটি মুছতে চান তার **ID** পাঠান:")
         return
 
-    # ১. ডুপ্লিকেট চেক (সিকিউরিটি কি সহ)
-    check_url = f"{FIREBASE_URL}/movies.json?auth={FIREBASE_SECRET}"
-    try:
-        response = requests.get(check_url)
-        existing_data = response.json()
-        if existing_data:
-            for key, item in existing_data.items():
-                if str(item.get('id')) == str(content_id):
-                    bot.reply_to(message, f"⚠️ আকাশ, আইডি {content_id} আগে থেকেই ডাটাবেজে আছে!")
-                    return
-    except Exception as e:
-        print(f"Duplicate Check Error: {e}")
-
-    user_data[message.chat.id] = {'content_id': content_id}
-    
-    markup = types.InlineKeyboardMarkup()
-    btn_bn = types.InlineKeyboardButton("বাংলা (Bangla)", callback_data="lang_bangla")
-    btn_hi = types.InlineKeyboardButton("হিন্দি (Hindi)", callback_data="lang_hindi")
-    btn_en = types.InlineKeyboardButton("ইংরেজি (English)", callback_data="lang_english")
-    markup.add(btn_bn, btn_hi, btn_en)
-    
-    bot.send_message(message.chat.id, f"আইডি {content_id} এর জন্য ভাষা সিলেক্ট করুন:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('lang_'))
-def save_content_callback(call):
-    chat_id = call.message.chat.id
-    if chat_id not in user_data:
-        bot.answer_callback_query(call.id, "সেশন শেষ, আবার আইডি পাঠান।")
+    # ২. ভিডিও বা আইডি ইনপুট
+    if text == "video":
+        bot.reply_to(message, "📝 মুভির আইডি (TMDB ID) পাঠান:")
         return
 
-    selected_lang = call.data.split('_')[1].capitalize()
-    content_id = user_data[chat_id]['content_id']
-    
-    # ২. প্রথমে মুভি হিসেবে চেক করা, না পেলে টিভি সিরিজ হিসেবে চেক করা
-    is_tv = False
-    tmdb_url = f"https://api.themoviedb.org/3/movie/{content_id}?api_key={TMDB_API_KEY}&language=bn-BD"
-    response = requests.get(tmdb_url).json()
-    
-    if 'title' not in response:
-        is_tv = True
-        tmdb_url = f"https://api.themoviedb.org/3/tv/{content_id}?api_key={TMDB_API_KEY}&language=bn-BD"
-        response = requests.get(tmdb_url).json()
-
-    try:
-        # মুভির জন্য 'title' এবং সিরিজের জন্য 'name' ব্যবহার করা হয়
-        title = response.get('title') or response.get('name')
+    if text.isdigit():
+        content_id = text
         
-        if title:
-            trailer_link = get_trailer(content_id, is_tv)
-            
-            movie_info = {
-                "id": content_id,
-                "title": title,
-                "poster": f"https://image.tmdb.org/t/p/w500{response.get('poster_path', '')}",
-                "overview": response.get('overview', 'বিবরণ নেই'),
-                "language": selected_lang,
-                "video_url": trailer_link,
-                "download_url": "", 
-                "status": "Premium Coming Soon",
-                "type": "TV Series" if is_tv else "Movie"
-            }
-            
-            # ৩. ফায়ারবেসে ডাটা সেভ
-            firebase_post_url = f"{FIREBASE_URL}/movies.json?auth={FIREBASE_SECRET}"
-            res = requests.post(firebase_post_url, json=movie_info)
-            
-            if res.status_code == 200:
-                bot.edit_message_text(f"✅ *{title}* ({selected_lang})\nসফলভাবে সেভ হয়েছে!", 
-                                     chat_id, call.message.message_id, parse_mode="Markdown")
-            else:
-                bot.send_message(chat_id, "❌ ফায়ারবেসে সেভ করতে সমস্যা হয়েছে।")
+        # চেক করা হচ্ছে ইউজার কি ডিলিট মোডে আছে কিনা
+        if user_data.get(message.chat.id, {}).get('action') == 'delete_mode':
+            perform_delete(message, content_id)
         else:
-            bot.send_message(chat_id, "❌ মুভি বা সিরিজ পাওয়া যায়নি। আইডি চেক করুন।")
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ এরর: {str(e)}")
-    
-    if chat_id in user_data:
-        del user_data[chat_id]
+            handle_save_or_edit(message, content_id)
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+# --- ডিলিট করার ফাংশন ---
+def perform_delete(message, content_id):
+    bot.send_message(message.chat.id, f"🔍 আইডি {content_id} ডিলিট করার জন্য খোঁজা হচ্ছে...")
+    fb_key, data = find_firebase_key(content_id)
+    
+    if fb_key:
+        title = data.get('title', 'Unknown')
+        del_res = requests.delete(f"{FIREBASE_URL}/movies/{fb_key}.json?auth={FIREBASE_SECRET}")
+        if del_res.status_code == 200:
+            bot.reply_to(message, f"✅ সফলভাবে মুছে ফেলা হয়েছে:\n*{title}*", parse_mode="Markdown")
+        else:
+            bot.reply_to(message, "❌ ডিলিট করতে সমস্যা হয়েছে।")
+    else:
+        bot.reply_to(message, "⚠️ এই আইডির কোনো মুভি ডাটাবেজে নেই।")
+    
+    # ডিলিট শেষে মোড ক্লিয়ার করা
+    if message.chat.id in user_data:
+        del user_data[message.chat.id]
+
+# --- সেভ বা এডিট করার ফাংশন ---
+def handle_save_or_edit(message, content_id):
+    fb_key, existing_data = find_firebase_key(content_id)
+    user_data[message.chat.id] = {'id': content_id, 'fb_key': fb_key}
+    
+    if fb_key:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔗 লিঙ্ক আপডেট", callback_data="edit_link"),
+                   types.InlineKeyboardButton("👁️ ভিউ পরিবর্তন", callback_data="edit_views"))
+        bot.send_message(message.chat.id, f"🎬 *{existing_data.get('title')}* অলরেডি আছে। কী করতে চান?", parse_mode="Markdown", reply_markup=markup)
+    else:
+        # নতুন মুভি সেভ করার প্রসেস (আগের কোড অনুযায়ী)
+        start_new_save_process(message, content_id)
+
+# (বাকি ফাংশনগুলো যেমন get_link, get_views, start_new_save_process আগের মতই থাকবে)
+# ... [এখানে আগের কোডের বাকি অংশটুকু থাকবে] ...
+
+def start_new_save_process(message, content_id):
+    # TMDB থেকে ডাটা নিয়ে আসার লজিক...
+    url = f"https://api.themoviedb.org/3/movie/{content_id}?api_key={TMDB_API_KEY}"
+    data = requests.get(url).json()
+    if 'title' not in data:
+        url = f"https://api.themoviedb.org/3/tv/{content_id}?api_key={TMDB_API_KEY}"
+        data = requests.get(url).json()
+    
+    if 'title' in data or 'name' in data:
+        title = data.get('title') or data.get('name')
+        user_data[message.chat.id].update({'title': title, 'poster': f"https://image.tmdb.org/t/p/w500{data.get('poster_path', '')}"})
+        bot.send_message(message.chat.id, f"✅ নতুন মুভি: *{title}*\nলিঙ্ক দিন (বা 'skip' লিখুন):", parse_mode="Markdown")
+        bot.register_next_step_handler(message, get_link)
+
+def get_link(message):
+    link = message.text.strip()
+    user_data[message.chat.id]['download_url'] = "" if link.lower() == 'skip' else link
+    if user_data[message.chat.id].get('fb_key'):
+        requests.patch(f"{FIREBASE_URL}/movies/{user_data[message.chat.id]['fb_key']}.json?auth={FIREBASE_SECRET}", json={'download_url': user_data[message.chat.id]['download_url']})
+        bot.reply_to(message, "✅ লিঙ্ক আপডেট হয়েছে!")
+    else:
+        bot.reply_to(message, "👁️ কত ভিউ দেখাতে চান?")
+        bot.register_next_step_handler(message, get_views)
+
+def get_views(message):
+    views = message.text.strip()
+    if not views.isdigit(): return
+    if user_data[message.chat.id].get('fb_key'):
+        requests.patch(f"{FIREBASE_URL}/movies/{user_data[message.chat.id]['fb_key']}.json?auth={FIREBASE_SECRET}", json={'views': int(views)})
+        bot.reply_to(message, "✅ ভিউ আপডেট হয়েছে!")
+    else:
+        user_data[message.chat.id]['views'] = int(views)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("Bangla", callback_data="set_Bangla"), types.InlineKeyboardButton("Hindi", callback_data="set_Hindi"))
+        bot.send_message(message.chat.id, "🌐 ভাষা:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('set_'))
+def finalize(call):
+    lang = call.data.split('_')[1]
+    info = user_data[call.message.chat.id]
+    final_data = {"id": info['id'], "title": info['title'], "poster": info['poster'], "download_url": info['download_url'], "views": info['views'], "language": lang}
+    requests.post(f"{FIREBASE_URL}/movies.json?auth={FIREBASE_SECRET}", json=final_data)
+    bot.edit_message_text("✅ সফলভাবে সেভ হয়েছে!", call.message.chat.id, call.message.message_id)
 
 if __name__ == "__main__":
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-    
-    print("Bot is starting...")
-    bot.infinity_polling(skip_pending=True, timeout=20)
+    Thread(target=lambda: app.run(host="0.0.0.0", port=8000)).start()
+    bot.infinity_polling()
     
